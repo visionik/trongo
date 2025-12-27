@@ -89,6 +89,13 @@ func (p *parser) parse() (interface{}, error) {
 		return nil, nil
 	}
 
+	// Support implicit root objects like:
+	//   key: value\nother: value
+	// This is common in TRON docs and examples.
+	if (p.current().Type == TokenIdentifier || p.current().Type == TokenString) && p.peek(1).Type == TokenColon {
+		return p.parseImplicitObject()
+	}
+
 	return p.parseValue()
 }
 
@@ -227,6 +234,7 @@ func (p *parser) parseArray() ([]interface{}, error) {
 
 	items := []interface{}{}
 
+	p.skipNewlines()
 	// Handle empty array
 	if p.current().Type == TokenRBracket {
 		p.advance()
@@ -235,12 +243,14 @@ func (p *parser) parseArray() ([]interface{}, error) {
 
 	// Parse array elements
 	for {
+		p.skipNewlines()
 		item, err := p.parseValue()
 		if err != nil {
 			return nil, err
 		}
 		items = append(items, item)
 
+		p.skipNewlines()
 		// Check for comma
 		if p.current().Type != TokenComma {
 			break
@@ -248,12 +258,71 @@ func (p *parser) parseArray() ([]interface{}, error) {
 		p.advance() // consume comma
 	}
 
+	p.skipNewlines()
 	// Expect closing bracket
 	if _, err := p.expect(TokenRBracket); err != nil {
 		return nil, err
 	}
 
 	return items, nil
+}
+
+// parseImplicitObject parses a root-level object without surrounding braces.
+//
+// Grammar (roughly):
+//
+//	(key ':' value) (separator (key ':' value))*
+//
+// where separator can be one or more newlines and/or commas.
+func (p *parser) parseImplicitObject() (map[string]interface{}, error) {
+	obj := make(map[string]interface{})
+
+	for {
+		p.skipNewlines()
+		tok := p.current()
+		if tok.Type == TokenEOF {
+			break
+		}
+
+		// Parse key (string or identifier)
+		key := ""
+		if tok.Type == TokenString || tok.Type == TokenIdentifier {
+			key = tok.Value
+			p.advance()
+		} else {
+			return nil, p.syntaxError("expected object key")
+		}
+
+		// Expect colon
+		if _, err := p.expect(TokenColon); err != nil {
+			return nil, err
+		}
+
+		// Parse value
+		value, err := p.parseValue()
+		if err != nil {
+			return nil, err
+		}
+		obj[key] = value
+
+		// Consume optional separators
+		p.skipNewlines()
+		if p.current().Type == TokenComma {
+			p.advance()
+			continue
+		}
+		// If next token looks like another key, continue; otherwise break.
+		if (p.current().Type == TokenIdentifier || p.current().Type == TokenString) && p.peek(1).Type == TokenColon {
+			continue
+		}
+		if p.current().Type == TokenEOF {
+			break
+		}
+		// Anything else is unexpected.
+		return nil, p.syntaxError(fmt.Sprintf("unexpected token: %s", p.current().Type))
+	}
+
+	return obj, nil
 }
 
 // parseObject parses an object: {"key":value,"key2":value2}
@@ -264,6 +333,7 @@ func (p *parser) parseObject() (map[string]interface{}, error) {
 
 	obj := make(map[string]interface{})
 
+	p.skipNewlines()
 	// Handle empty object
 	if p.current().Type == TokenRBrace {
 		p.advance()
@@ -272,6 +342,7 @@ func (p *parser) parseObject() (map[string]interface{}, error) {
 
 	// Parse key-value pairs
 	for {
+		p.skipNewlines()
 		// Parse key (must be string or identifier)
 		key := ""
 		tok := p.current()
@@ -290,6 +361,7 @@ func (p *parser) parseObject() (map[string]interface{}, error) {
 			return nil, err
 		}
 
+		p.skipNewlines()
 		// Parse value
 		value, err := p.parseValue()
 		if err != nil {
@@ -298,6 +370,7 @@ func (p *parser) parseObject() (map[string]interface{}, error) {
 
 		obj[key] = value
 
+		p.skipNewlines()
 		// Check for comma
 		if p.current().Type != TokenComma {
 			break
@@ -305,6 +378,7 @@ func (p *parser) parseObject() (map[string]interface{}, error) {
 		p.advance() // consume comma
 	}
 
+	p.skipNewlines()
 	// Expect closing brace
 	if _, err := p.expect(TokenRBrace); err != nil {
 		return nil, err
@@ -343,12 +417,14 @@ func (p *parser) parseClassInstantiation() (map[string]interface{}, error) {
 
 	// Parse arguments
 	for {
+		p.skipNewlines()
 		arg, err := p.parseValue()
 		if err != nil {
 			return nil, err
 		}
 		args = append(args, arg)
 
+		p.skipNewlines()
 		// Check for comma
 		if p.current().Type != TokenComma {
 			break
@@ -356,6 +432,7 @@ func (p *parser) parseClassInstantiation() (map[string]interface{}, error) {
 		p.advance() // consume comma
 	}
 
+	p.skipNewlines()
 	// Expect closing paren
 	if _, err := p.expect(TokenRParen); err != nil {
 		return nil, err
