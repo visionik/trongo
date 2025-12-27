@@ -206,6 +206,56 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool, depth int) 
 		return "null", nil
 	}
 
+	marshalerType := reflect.TypeOf((*Marshaler)(nil)).Elem()
+	textMarshalerType := reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+
+	// Handle interfaces early so we honor marshalers stored inside interface{}.
+	for v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			return "null", nil
+		}
+		v = v.Elem()
+	}
+
+	// Prefer custom marshalers (including pointer receivers via Addr()).
+	if v.IsValid() {
+		if v.Type().Implements(marshalerType) {
+			marshaler := v.Interface().(Marshaler)
+			data, err := marshaler.MarshalTRON()
+			if err != nil {
+				return "", err
+			}
+			return string(data), nil
+		}
+		if v.CanAddr() && v.Addr().Type().Implements(marshalerType) {
+			marshaler := v.Addr().Interface().(Marshaler)
+			data, err := marshaler.MarshalTRON()
+			if err != nil {
+				return "", err
+			}
+			return string(data), nil
+		}
+
+		if v.Type().Implements(textMarshalerType) {
+			marshaler := v.Interface().(encoding.TextMarshaler)
+			text, err := marshaler.MarshalText()
+			if err != nil {
+				return "", err
+			}
+			quoted, _ := json.Marshal(string(text))
+			return string(quoted), nil
+		}
+		if v.CanAddr() && v.Addr().Type().Implements(textMarshalerType) {
+			marshaler := v.Addr().Interface().(encoding.TextMarshaler)
+			text, err := marshaler.MarshalText()
+			if err != nil {
+				return "", err
+			}
+			quoted, _ := json.Marshal(string(text))
+			return string(quoted), nil
+		}
+	}
+
 	// Check for cycles in pointers BEFORE dereferencing
 	// Note: Only pointers can create cycles in Go value structures
 	if v.Kind() == reflect.Ptr {
@@ -221,35 +271,6 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool, depth int) 
 			defer func() { delete(stack, addr) }()
 		}
 		v = v.Elem()
-	}
-
-	// Handle interfaces
-	for v.Kind() == reflect.Interface {
-		if v.IsNil() {
-			return "null", nil
-		}
-		v = v.Elem()
-	}
-
-	// Check for custom marshaler
-	if v.Type().Implements(reflect.TypeOf((*Marshaler)(nil)).Elem()) {
-		marshaler := v.Interface().(Marshaler)
-		data, err := marshaler.MarshalTRON()
-		if err != nil {
-			return "", err
-		}
-		return string(data), nil
-	}
-
-	// Check for text marshaler
-	if v.Type().Implements(reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()) {
-		marshaler := v.Interface().(encoding.TextMarshaler)
-		text, err := marshaler.MarshalText()
-		if err != nil {
-			return "", err
-		}
-		quoted, _ := json.Marshal(string(text))
-		return string(quoted), nil
 	}
 
 	switch v.Kind() {

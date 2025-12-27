@@ -305,6 +305,7 @@ func parseString(input string, cursor, line, column int) (string, int, int, erro
 	cursor += size
 	column++
 
+	closed := false
 	for cursor < len(input) {
 		r, size := utf8.DecodeRuneInString(input[cursor:])
 		if r == utf8.RuneError && size == 1 {
@@ -313,6 +314,7 @@ func parseString(input string, cursor, line, column int) (string, int, int, erro
 		if r == '"' {
 			cursor += size
 			column++
+			closed = true
 			break
 		}
 		if r == '\\' {
@@ -398,6 +400,9 @@ func parseString(input string, cursor, line, column int) (string, int, int, erro
 		column++
 	}
 
+	if !closed {
+		return "", 0, 0, &SyntaxError{msg: "unterminated string", Offset: int64(cursor)}
+	}
 	return value.String(), cursor, column, nil
 }
 
