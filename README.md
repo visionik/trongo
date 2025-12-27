@@ -100,4 +100,4 @@ Paste in your data to see TRON's token efficiency compared to other data formats
 
 ## License
 
-[MIT](./LICENSE) License © 2025-PRESENT
+MIT License © 2025-PRESENT Jonathan Taylor
