@@ -1,0 +1,179 @@
+version: '3'
+
+set:
+  - errexit
+  - nounset
+  - pipefail
+
+vars:
+  COVERAGE_THRESHOLD: 80
+  GODOC_PORT: 6060
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  # Build tasks
+  build:
+    desc: Build Go binaries
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    cmds:
+      - go build ./...
+
+  # Test tasks
+  test:
+    desc: Run all tests
+    deps:
+      - go:fmt
+      - go:vet
+    cmds:
+      - go test -v ./...
+
+  test:coverage:
+    desc: Run tests with coverage report
+    sources:
+      - '**/*.go'
+    generates:
+      - coverage.out
+      - coverage.html
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
+      - go tool cover -html=coverage.out -o coverage.html
+      - echo Coverage report generated - coverage.html
+
+  test:fuzz:
+    desc: Run fuzz tests
+    cmds:
+      - go test -fuzz=. -fuzztime=30s ./...
+
+  # Code quality tasks
+  go:fmt:
+    desc: Format Go code
+    sources:
+      - '**/*.go'
+    cmds:
+      - go fmt ./...
+
+  go:vet:
+    desc: Run go vet static analysis
+    sources:
+      - '**/*.go'
+    cmds:
+      - go vet ./...
+
+  go:lint:
+    desc: Run golint (if available)
+    preconditions:
+      - sh: command -v golint
+        msg: golint not installed - run go install golang.org/x/lint/golint@latest
+    cmds:
+      - golint ./...
+
+  go:staticcheck:
+    desc: Run staticcheck (if available)
+    preconditions:
+      - sh: command -v staticcheck
+        msg: staticcheck not installed - run go install honnef.co/go/tools/cmd/staticcheck@latest
+    cmds:
+      - staticcheck ./...
+
+  # Quality checks
+  check:
+    desc: Run pre-commit checks (format, vet, test)
+    deps:
+      - go:fmt
+      - go:vet
+      - test
+
+  quality:
+    desc: Run all quality checks including lint and staticcheck
+    deps:
+      - go:fmt
+      - go:vet
+      - test
+    cmds:
+      - task: go:lint
+        ignore_error: true
+      - task: go:staticcheck
+        ignore_error: true
+
+  # Dependencies
+  deps:
+    desc: Install and update dependencies
+    cmds:
+      - go mod tidy
+      - go mod download
+
+  deps:install:
+    desc: Install development tools
+    cmds:
+      - go install golang.org/x/lint/golint@latest
+      - go install honnef.co/go/tools/cmd/staticcheck@latest
+      - echo 'Development tools installed'
+
+  # Documentation
+  docs:serve:
+    desc: Start documentation server
+    cmds:
+      - echo 'Starting documentation server at http://localhost:{{.GODOC_PORT}}'
+      - echo 'Visit http://localhost:{{.GODOC_PORT}}/pkg/github.com/tron-format/trongo/ for package docs'
+      - godoc -http=:{{.GODOC_PORT}}
+
+  docs:pkg:
+    desc: View package documentation
+    requires:
+      vars: [PKG]
+    cmds:
+      - go doc {{.PKG}}
+
+  # Examples
+  examples:run:
+    desc: Run example code
+    cmds:
+      - go run examples/quickstart.go
+      - go run examples/comparison.go
+      - go run examples/unmarshal_examples.go
+      - go run examples/use_cases.go
+
+  # Cleanup
+  clean:
+    desc: Clean build artifacts and test cache
+    cmds:
+      - go clean ./...
+      - rm -f coverage.out coverage.html
+
+  clean:all:
+    desc: Clean all generated files including module cache
+    deps:
+      - clean
+    cmds:
+      - go clean -cache -testcache -modcache
+
+  # CI/CD
+  ci:
+    desc: Run CI pipeline (used in continuous integration)
+    deps:
+      - deps
+      - go:fmt
+      - go:vet
+      - test:coverage
+    cmds:
+      - echo 'CI pipeline completed successfully'
+
+  # Development workflow
+  dev:
+    desc: Run development workflow (format, test, build)
+    deps:
+      - go:fmt
+      - go:vet
+      - test
+      - build
+    cmds:
+      - echo 'Development workflow completed'
