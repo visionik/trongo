@@ -3,6 +3,7 @@ package tron
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -76,9 +77,11 @@ A(1)`,
 		result, err := p.parse()
 
 		// If parsing succeeds, result should be non-nil or error should be set
+		// Exception: null literal and empty input are allowed to return nil
 		if err == nil && result == nil {
-			// Empty input is ok
-			if input != "" && input != "\n" {
+			// Empty input, whitespace, or null literal are ok
+			trimmed := strings.TrimSpace(input)
+			if trimmed != "" && trimmed != "null" {
 				t.Errorf("parser returned nil result with no error for: %q", input)
 			}
 		}

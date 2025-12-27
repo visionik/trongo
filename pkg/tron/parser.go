@@ -7,17 +7,19 @@ import (
 
 // parser parses TRON format into Go native types.
 type parser struct {
-	tokens  []Token
-	pos     int
-	classes map[string][]string // className -> propertyNames
+	tokens          []Token
+	pos             int
+	classes         map[string][]string // className -> propertyNames
+	preserveNumbers bool                // when true, keep number tokens as numberLiteral
 }
 
 // newParser creates a new parser from tokens.
 func newParser(tokens []Token) *parser {
 	return &parser{
-		tokens:  tokens,
-		pos:     0,
-		classes: make(map[string][]string),
+		tokens:          tokens,
+		pos:             0,
+		classes:         make(map[string][]string),
+		preserveNumbers: false,
 	}
 }
 
@@ -175,6 +177,13 @@ func (p *parser) parseValue() (interface{}, error) {
 
 	case TokenNumber:
 		p.advance()
+		if p.preserveNumbers {
+			// Validate number syntax but preserve original string to avoid float64 precision loss.
+			if _, err := strconv.ParseFloat(tok.Value, 64); err != nil {
+				return nil, p.syntaxError(fmt.Sprintf("invalid number: %s", tok.Value))
+			}
+			return numberLiteral(tok.Value), nil
+		}
 		return p.parseNumberValue(tok.Value)
 
 	case TokenString:
@@ -195,6 +204,11 @@ func (p *parser) parseValue() (interface{}, error) {
 		return nil, p.syntaxError(fmt.Sprintf("unexpected token: %s", tok.Type))
 	}
 }
+
+// numberLiteral preserves the original textual representation of a number.
+//
+// Used by Unmarshal to avoid float64 precision loss for large integers.
+type numberLiteral string
 
 // parseNumberValue parses a number string into float64.
 func (p *parser) parseNumberValue(s string) (float64, error) {

@@ -30,6 +30,8 @@ func unmarshal(data []byte, v interface{}) error {
 
 	// Parse
 	parser := newParser(tokens)
+	// Preserve number tokens as strings to avoid float64 precision loss for large integers.
+	parser.preserveNumbers = true
 	parsedValue, err := parser.parse()
 	if err != nil {
 		return err
@@ -69,7 +71,10 @@ func (d *decoder) decode(src interface{}, dst reflect.Value) error {
 	switch srcVal := src.(type) {
 	case bool:
 		return d.decodeBool(srcVal, dst)
+	case numberLiteral:
+		return d.decodeNumberLiteral(string(srcVal), dst)
 	case float64:
+		// Backward compatibility (should be rare now)
 		return d.decodeNumber(srcVal, dst)
 	case string:
 		return d.decodeString(srcVal, dst)
@@ -112,36 +117,87 @@ func (d *decoder) decodeBool(src bool, dst reflect.Value) error {
 	}
 }
 
-// decodeNumber decodes a numeric value.
-func (d *decoder) decodeNumber(src float64, dst reflect.Value) error {
+// decodeNumberLiteral decodes a numeric literal.
+func (d *decoder) decodeNumberLiteral(src string, dst reflect.Value) error {
 	switch dst.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		min := minInt(dst.Type())
-		max := maxInt(dst.Type())
-		if src < float64(min) || src > float64(max) {
-			return &UnmarshalTypeError{Value: fmt.Sprintf("number %v", src), Type: dst.Type()}
+		bits := 0
+		switch dst.Kind() {
+		case reflect.Int8:
+			bits = 8
+		case reflect.Int16:
+			bits = 16
+		case reflect.Int32:
+			bits = 32
+		case reflect.Int64:
+			bits = 64
+		case reflect.Int:
+			bits = 64
 		}
-		dst.SetInt(int64(src))
+		v, err := strconv.ParseInt(src, 10, bits)
+		if err != nil {
+			// If it's not a plain int (e.g. 1e3), fall back to float parsing
+			f, ferr := strconv.ParseFloat(src, 64)
+			if ferr != nil || f != math.Trunc(f) {
+				return &UnmarshalTypeError{Value: fmt.Sprintf("number %s", src), Type: dst.Type()}
+			}
+			// Even if integral, if it didn't parse as int within range, it's overflow.
+			return &UnmarshalTypeError{Value: fmt.Sprintf("number %s", src), Type: dst.Type()}
+		}
+		dst.SetInt(v)
 		return nil
 
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		if src < 0 || src > float64(maxUint(dst.Type())) {
-			return &UnmarshalTypeError{Value: fmt.Sprintf("number %v", src), Type: dst.Type()}
+		bits := 0
+		switch dst.Kind() {
+		case reflect.Uint8:
+			bits = 8
+		case reflect.Uint16:
+			bits = 16
+		case reflect.Uint32:
+			bits = 32
+		case reflect.Uint64:
+			bits = 64
+		case reflect.Uint:
+			bits = 64
 		}
-		dst.SetUint(uint64(src))
+		v, err := strconv.ParseUint(src, 10, bits)
+		if err != nil {
+			f, ferr := strconv.ParseFloat(src, 64)
+			if ferr != nil || f != math.Trunc(f) || f < 0 {
+				return &UnmarshalTypeError{Value: fmt.Sprintf("number %s", src), Type: dst.Type()}
+			}
+			return &UnmarshalTypeError{Value: fmt.Sprintf("number %s", src), Type: dst.Type()}
+		}
+		dst.SetUint(v)
 		return nil
 
 	case reflect.Float32, reflect.Float64:
-		dst.SetFloat(src)
+		f, err := strconv.ParseFloat(src, dst.Type().Bits())
+		if err != nil {
+			return &UnmarshalTypeError{Value: fmt.Sprintf("number %s", src), Type: dst.Type()}
+		}
+		dst.SetFloat(f)
 		return nil
 
 	case reflect.Interface:
 		if dst.NumMethod() == 0 {
-			dst.Set(reflect.ValueOf(src))
+			// Default to float64 to match JSON semantics.
+			f, err := strconv.ParseFloat(src, 64)
+			if err != nil {
+				return &UnmarshalTypeError{Value: fmt.Sprintf("number %s", src), Type: dst.Type()}
+			}
+			dst.Set(reflect.ValueOf(f))
 			return nil
 		}
 	}
 	return &UnmarshalTypeError{Value: "number", Type: dst.Type()}
+}
+
+// decodeNumber decodes a numeric value.
+// Deprecated: numeric parsing now uses decodeNumberLiteral to avoid float64 precision loss.
+func (d *decoder) decodeNumber(src float64, dst reflect.Value) error {
+	return d.decodeNumberLiteral(strconv.FormatFloat(src, 'g', -1, 64), dst)
 }
 
 // decodeString decodes a string value.
@@ -165,6 +221,33 @@ func (d *decoder) decodeString(src string, dst reflect.Value) error {
 	return &UnmarshalTypeError{Value: "string", Type: dst.Type()}
 }
 
+// normalizeInterfaceValue converts parsed values into conventional Go values
+// suitable for interface{} targets (JSON-like semantics).
+func (d *decoder) normalizeInterfaceValue(v interface{}) interface{} {
+	switch vv := v.(type) {
+	case numberLiteral:
+		f, err := strconv.ParseFloat(string(vv), 64)
+		if err != nil {
+			return string(vv)
+		}
+		return f
+	case []interface{}:
+		out := make([]interface{}, len(vv))
+		for i := range vv {
+			out[i] = d.normalizeInterfaceValue(vv[i])
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(vv))
+		for k, val := range vv {
+			out[k] = d.normalizeInterfaceValue(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // decodeArray decodes an array value.
 func (d *decoder) decodeArray(src []interface{}, dst reflect.Value) error {
 	switch dst.Kind() {
@@ -174,9 +257,11 @@ func (d *decoder) decodeArray(src []interface{}, dst reflect.Value) error {
 		return d.decodeArrayFixed(src, dst)
 	case reflect.Interface:
 		if dst.NumMethod() == 0 {
-			// Create []interface{} with decoded elements
+			// Create []interface{} with normalized elements
 			result := make([]interface{}, len(src))
-			copy(result, src)
+			for i := range src {
+				result[i] = d.normalizeInterfaceValue(src[i])
+			}
 			dst.Set(reflect.ValueOf(result))
 			return nil
 		}
@@ -228,10 +313,10 @@ func (d *decoder) decodeObject(src map[string]interface{}, dst reflect.Value) er
 		return d.decodeStruct(src, dst)
 	case reflect.Interface:
 		if dst.NumMethod() == 0 {
-			// Create map[string]interface{} with decoded values
-			result := make(map[string]interface{})
+			// Create map[string]interface{} with normalized values
+			result := make(map[string]interface{}, len(src))
 			for k, v := range src {
-				result[k] = v
+				result[k] = d.normalizeInterfaceValue(v)
 			}
 			dst.Set(reflect.ValueOf(result))
 			return nil

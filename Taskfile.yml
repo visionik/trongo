@@ -177,3 +177,8 @@ tasks:
       - build
     cmds:
       - echo 'Development workflow completed'
+
+  all:
+    desc: Alias for dev (full local workflow)
+    deps:
+      - dev

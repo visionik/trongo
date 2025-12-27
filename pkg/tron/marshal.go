@@ -263,6 +263,11 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, er
 		return string(quoted), nil
 
 	case reflect.Array, reflect.Slice:
+		// Check for nil slice
+		if v.Kind() == reflect.Slice && v.IsNil() {
+			return "null", nil
+		}
+
 		if v.Type().Elem().Kind() == reflect.Uint8 {
 			// Handle []byte as base64 string
 			bytes := v.Bytes()
@@ -281,6 +286,10 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, er
 		return "[" + strings.Join(items, ",") + "]", nil
 
 	case reflect.Map:
+		// Check for nil map
+		if v.IsNil() {
+			return "null", nil
+		}
 		if v.Len() == 0 {
 			return "{}", nil
 		}
