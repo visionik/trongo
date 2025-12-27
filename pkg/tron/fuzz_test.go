@@ -1,7 +1,6 @@
 package tron
 
 import (
-	"bytes"
 	"encoding/json"
 	"reflect"
 	"testing"

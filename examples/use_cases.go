@@ -1,4 +1,4 @@
-package main
+package use_cases
 
 import (
 	"encoding/json"

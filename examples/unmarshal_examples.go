@@ -87,7 +87,7 @@ A(10,20)`,
 }
 
 // Example 4: Unmarshal nested structures
-func example4_NestedStructures() {
+func example4_NestedStructuresUnmarshal() {
 	fmt.Println("=== Example 4: Nested Structures ===")
 
 	type Address struct {
@@ -340,7 +340,7 @@ func main() {
 	example1_UnmarshalStruct()
 	example2_UnmarshalArray()
 	example3_UnmarshalInterface()
-	example4_NestedStructures()
+	example4_NestedStructuresUnmarshal()
 	example5_MissingFields()
 	example6_UnknownFields()
 	example7_UnmarshalMap()

@@ -504,8 +504,14 @@ func TestClassGeneration(t *testing.T) {
 			name: "many classes",
 			input: struct {
 				A []struct{ X, Y int }
-				B []struct{ Name string; Age int }
-				C []struct{ ID int; Active bool }
+				B []struct {
+					Name string
+					Age  int
+				}
+				C []struct {
+					ID     int
+					Active bool
+				}
 			}{
 				A: []struct{ X, Y int }{{1, 2}, {3, 4}},
 				B: []struct {
