@@ -36,3 +36,6 @@ Thumbs.db
 
 # Warp agent docs (auto-generated)
 docs/warp*.md
+
+# Task cache
+.task/
