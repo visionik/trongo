@@ -314,16 +314,17 @@ func FuzzJSONCompatibility(f *testing.F) {
 		var tronResult interface{}
 		err = Unmarshal([]byte(jsonInput), &tronResult)
 
-		// If it's valid JSON object notation, TRON should handle it
-		// (Note: TRON also allows unquoted identifiers in objects, but JSON doesn't)
+		// If it's valid JSON object notation, TRON should handle it.
+		// Some valid JSON may not be accepted by TRON depending on numeric rules;
+		// if TRON rejects it, we just skip (no panics is still valuable).
 		if err != nil {
-			// Some JSON might not be valid TRON (e.g., numbers with leading zeros)
-			// That's ok, we just want to ensure no panics
 			return
 		}
 
-		// Both should produce equivalent results (though types might differ slightly)
-		// We mainly care that parsing succeeds without panic
+		// If both succeed, the decoded values should be equivalent.
+		if !reflect.DeepEqual(normalizeJSONValue(jsonResult), normalizeJSONValue(tronResult)) {
+			t.Fatalf("JSON and TRON results differ\ninput: %s\njson: %#v\ntron: %#v", jsonInput, jsonResult, tronResult)
+		}
 	})
 }
 
