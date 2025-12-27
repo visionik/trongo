@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // TokenType represents the type of a token in TRON format.
@@ -113,189 +115,222 @@ func (t Token) String() string {
 // tokenize parses the input string and returns a slice of tokens.
 func tokenize(input string) ([]Token, error) {
 	var tokens []Token
-	cursor := 0
+	cursor := 0 // byte index
 	line := 1
-	column := 1
+	column := 1 // rune column within line
+
+	appendToken := func(tok Token) error {
+		if len(tokens) >= maxTokens {
+			return &SyntaxError{msg: "too many tokens", Offset: int64(cursor)}
+		}
+		tokens = append(tokens, tok)
+		return nil
+	}
 
 	for cursor < len(input) {
-		char := rune(input[cursor])
+		r, size := utf8.DecodeRuneInString(input[cursor:])
+		if r == utf8.RuneError && size == 1 {
+			return nil, &SyntaxError{msg: "invalid UTF-8", Offset: int64(cursor)}
+		}
 
 		// Handle whitespace (except newlines)
-		if char == ' ' || char == '\t' || char == '\r' {
-			cursor++
+		if r == ' ' || r == '\t' || r == '\r' {
+			cursor += size
 			column++
 			continue
 		}
 
 		// Handle newlines
-		if char == '\n' {
-			tokens = append(tokens, Token{
-				Type:   TokenNewline,
-				Value:  "\n",
-				Line:   line,
-				Column: column,
-			})
-			cursor++
+		if r == '\n' {
+			if err := appendToken(Token{Type: TokenNewline, Value: "\n", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			line++
 			column = 1
 			continue
 		}
 
 		// Handle comments
-		if char == '#' {
-			for cursor < len(input) && input[cursor] != '\n' {
-				cursor++
+		if r == '#' {
+			// Consume until newline or EOF
+			cursor += size
+			column++
+			for cursor < len(input) {
+				r2, s2 := utf8.DecodeRuneInString(input[cursor:])
+				if r2 == utf8.RuneError && s2 == 1 {
+					return nil, &SyntaxError{msg: "invalid UTF-8", Offset: int64(cursor)}
+				}
+				if r2 == '\n' {
+					break
+				}
+				cursor += s2
+				column++
 			}
-			// Don't consume newline here, let the next iteration handle it
 			continue
 		}
 
 		// Handle single-character tokens
-		switch char {
+		switch r {
 		case '(':
-			tokens = append(tokens, Token{TokenLParen, "(", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenLParen, Value: "(", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case ')':
-			tokens = append(tokens, Token{TokenRParen, ")", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenRParen, Value: ")", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case '[':
-			tokens = append(tokens, Token{TokenLBracket, "[", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenLBracket, Value: "[", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case ']':
-			tokens = append(tokens, Token{TokenRBracket, "]", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenRBracket, Value: "]", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case '{':
-			tokens = append(tokens, Token{TokenLBrace, "{", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenLBrace, Value: "{", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case '}':
-			tokens = append(tokens, Token{TokenRBrace, "}", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenRBrace, Value: "}", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case ',':
-			tokens = append(tokens, Token{TokenComma, ",", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenComma, Value: ",", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case ':':
-			tokens = append(tokens, Token{TokenColon, ":", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenColon, Value: ":", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case ';':
-			tokens = append(tokens, Token{TokenSemicolon, ";", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenSemicolon, Value: ";", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		case '=':
-			tokens = append(tokens, Token{TokenEquals, "=", line, column})
-			cursor++
+			if err := appendToken(Token{Type: TokenEquals, Value: "=", Line: line, Column: column}); err != nil {
+				return nil, err
+			}
+			cursor += size
 			column++
 			continue
 		}
 
 		// Handle strings
-		if char == '"' {
+		if r == '"' {
 			value, newCursor, newColumn, err := parseString(input, cursor, line, column)
 			if err != nil {
 				return nil, err
 			}
-			tokens = append(tokens, Token{
-				Type:   TokenString,
-				Value:  value,
-				Line:   line,
-				Column: column,
-			})
+			if err := appendToken(Token{Type: TokenString, Value: value, Line: line, Column: column}); err != nil {
+				return nil, err
+			}
 			cursor = newCursor
 			column = newColumn
 			continue
 		}
 
-		// Handle numbers
-		if char == '-' || unicode.IsDigit(char) {
-			value, newCursor, newColumn := parseNumber(input, cursor, column)
-			tokens = append(tokens, Token{
-				Type:   TokenNumber,
-				Value:  value,
-				Line:   line,
-				Column: column,
-			})
+		// Handle numbers (JSON-style)
+		if r == '-' || (r >= '0' && r <= '9') {
+			value, newCursor, newColumn, ok := parseNumberJSON(input, cursor, column)
+			if !ok {
+				return nil, &SyntaxError{msg: "invalid number", Offset: int64(cursor)}
+			}
+			if err := appendToken(Token{Type: TokenNumber, Value: value, Line: line, Column: column}); err != nil {
+				return nil, err
+			}
 			cursor = newCursor
 			column = newColumn
 			continue
 		}
 
 		// Handle identifiers and keywords
-		if unicode.IsLetter(char) || char == '_' {
-			value, newCursor, newColumn := parseIdentifier(input, cursor, column)
+		if unicode.IsLetter(r) || r == '_' {
+			value, newCursor, newColumn := parseIdentifierUTF8(input, cursor, column)
 			tokenType := getKeywordType(value)
-			tokens = append(tokens, Token{
-				Type:   tokenType,
-				Value:  value,
-				Line:   line,
-				Column: column,
-			})
+			if err := appendToken(Token{Type: tokenType, Value: value, Line: line, Column: column}); err != nil {
+				return nil, err
+			}
 			cursor = newCursor
 			column = newColumn
 			continue
 		}
 
-		return nil, &SyntaxError{
-			msg:    fmt.Sprintf("Unexpected character '%c' at %d:%d", char, line, column),
-			Offset: int64(cursor),
-		}
+		return nil, &SyntaxError{msg: fmt.Sprintf("Unexpected character '%c' at %d:%d", r, line, column), Offset: int64(cursor)}
 	}
 
-	tokens = append(tokens, Token{
-		Type:   TokenEOF,
-		Value:  "",
-		Line:   line,
-		Column: column,
-	})
-
+	if err := appendToken(Token{Type: TokenEOF, Value: "", Line: line, Column: column}); err != nil {
+		return nil, err
+	}
 	return tokens, nil
 }
 
 // parseString parses a quoted string literal starting at the given cursor position.
 func parseString(input string, cursor, line, column int) (string, int, int, error) {
 	var value strings.Builder
-	cursor++ // skip opening quote
+
+	// Consume opening quote
+	r, size := utf8.DecodeRuneInString(input[cursor:])
+	if r != '"' {
+		return "", 0, 0, &SyntaxError{msg: "expected string", Offset: int64(cursor)}
+	}
+	cursor += size
 	column++
 
 	for cursor < len(input) {
-		char := input[cursor]
-		if char == '"' {
-			cursor++
+		r, size := utf8.DecodeRuneInString(input[cursor:])
+		if r == utf8.RuneError && size == 1 {
+			return "", 0, 0, &SyntaxError{msg: "invalid UTF-8", Offset: int64(cursor)}
+		}
+		if r == '"' {
+			cursor += size
 			column++
 			break
 		}
-		if char == '\\' {
-			cursor++
+		if r == '\\' {
+			// Backslash
+			cursor += size
 			column++
 			if cursor >= len(input) {
-				return "", 0, 0, &SyntaxError{
-					msg:    fmt.Sprintf("Unexpected end of input in string at %d:%d", line, column),
-					Offset: int64(cursor),
-				}
+				return "", 0, 0, &SyntaxError{msg: fmt.Sprintf("Unexpected end of input in string at %d:%d", line, column), Offset: int64(cursor)}
 			}
-			escaped := input[cursor]
-			switch escaped {
-			case '"':
-				value.WriteByte('"')
-			case '\\':
-				value.WriteByte('\\')
-			case '/':
-				value.WriteByte('/')
+			r2, s2 := utf8.DecodeRuneInString(input[cursor:])
+			if r2 == utf8.RuneError && s2 == 1 {
+				return "", 0, 0, &SyntaxError{msg: "invalid UTF-8", Offset: int64(cursor)}
+			}
+			cursor += s2
+			column++
+			switch r2 {
+			case '"', '\\', '/':
+				value.WriteRune(r2)
 			case 'b':
 				value.WriteByte('\b')
 			case 'f':
@@ -307,77 +342,148 @@ func parseString(input string, cursor, line, column int) (string, int, int, erro
 			case 't':
 				value.WriteByte('\t')
 			case 'u':
-				// Handle unicode escape sequences
-				if cursor+4 >= len(input) {
-					value.WriteByte('u')
-				} else {
-					hex := input[cursor+1 : cursor+5]
-					if isValidHex(hex) {
-						if codePoint, err := strconv.ParseInt(hex, 16, 32); err == nil {
-							value.WriteRune(rune(codePoint))
-							cursor += 4
-							column += 4
-						} else {
-							value.WriteByte('u')
-						}
-					} else {
-						value.WriteByte('u')
-					}
+				// \uXXXX (optionally surrogate pairs)
+				if cursor+4 > len(input) {
+					return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
 				}
+				hex := input[cursor : cursor+4]
+				if !isValidHex(hex) {
+					return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
+				}
+				cp, err := strconv.ParseInt(hex, 16, 32)
+				if err != nil {
+					return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
+				}
+				cursor += 4
+				column += 4
+				runeVal := rune(cp)
+
+				// Handle surrogate pairs. Unpaired surrogates are invalid.
+				if utf16.IsSurrogate(runeVal) {
+					// Must be a high surrogate followed by a low surrogate.
+					if runeVal < 0xD800 || runeVal > 0xDBFF {
+						return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
+					}
+					if !(cursor+6 <= len(input) && input[cursor] == '\\' && input[cursor+1] == 'u') {
+						return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
+					}
+					hex2 := input[cursor+2 : cursor+6]
+					if !isValidHex(hex2) {
+						return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
+					}
+					cp2, err2 := strconv.ParseInt(hex2, 16, 32)
+					if err2 != nil {
+						return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
+					}
+					r2v := rune(cp2)
+					if r2v < 0xDC00 || r2v > 0xDFFF {
+						return "", 0, 0, &SyntaxError{msg: "invalid unicode escape", Offset: int64(cursor)}
+					}
+					runeVal = utf16.DecodeRune(runeVal, r2v)
+					// consume \\uXXXX
+					cursor += 6
+					column += 6
+				}
+				value.WriteRune(runeVal)
 			default:
-				value.WriteByte(escaped)
+				// Non-standard escapes are kept as-is
+				value.WriteRune(r2)
 			}
-			cursor++
-			column++
-		} else {
-			value.WriteByte(char)
-			cursor++
-			column++
+			continue
 		}
+
+		// Regular rune
+		value.WriteRune(r)
+		cursor += size
+		column++
 	}
 
 	return value.String(), cursor, column, nil
 }
 
-// parseNumber parses a numeric literal starting at the given cursor position.
-func parseNumber(input string, cursor, column int) (string, int, int) {
+// parseNumberJSON scans a JSON-compatible number literal.
+// Returns ok=false if the prefix does not match the JSON number grammar.
+func parseNumberJSON(input string, cursor, column int) (string, int, int, bool) {
 	start := cursor
+	i := cursor
 
-	// Handle negative sign
-	if cursor < len(input) && input[cursor] == '-' {
-		cursor++
-		column++
+	if i < len(input) && input[i] == '-' {
+		i++
+	}
+	if i >= len(input) {
+		return "", cursor, column, false
 	}
 
-	// Parse digits and decimal point
-	for cursor < len(input) {
-		char := input[cursor]
-		if unicode.IsDigit(rune(char)) || char == '.' || char == 'e' || char == 'E' || char == '+' || char == '-' {
-			cursor++
-			column++
-		} else {
-			break
+	// int
+	if input[i] == '0' {
+		i++
+	} else if input[i] >= '1' && input[i] <= '9' {
+		i++
+		for i < len(input) && input[i] >= '0' && input[i] <= '9' {
+			i++
+		}
+	} else {
+		return "", cursor, column, false
+	}
+
+	// frac
+	if i < len(input) && input[i] == '.' {
+		i++
+		if i >= len(input) || input[i] < '0' || input[i] > '9' {
+			return "", cursor, column, false
+		}
+		for i < len(input) && input[i] >= '0' && input[i] <= '9' {
+			i++
 		}
 	}
 
-	return input[start:cursor], cursor, column
+	// exp
+	if i < len(input) && (input[i] == 'e' || input[i] == 'E') {
+		i++
+		if i < len(input) && (input[i] == '+' || input[i] == '-') {
+			i++
+		}
+		if i >= len(input) || input[i] < '0' || input[i] > '9' {
+			return "", cursor, column, false
+		}
+		for i < len(input) && input[i] >= '0' && input[i] <= '9' {
+			i++
+		}
+	}
+
+	// Column counts ASCII runes in the number.
+	newColumn := column + (i - start)
+	return input[start:i], i, newColumn, true
 }
 
-// parseIdentifier parses an identifier starting at the given cursor position.
-func parseIdentifier(input string, cursor, column int) (string, int, int) {
+// parseIdentifierUTF8 parses an identifier starting at the given cursor position.
+// Identifiers support Unicode letters/digits and underscore.
+func parseIdentifierUTF8(input string, cursor, column int) (string, int, int) {
 	start := cursor
+	i := cursor
+	col := column
+	first := true
 
-	for cursor < len(input) {
-		char := rune(input[cursor])
-		if unicode.IsLetter(char) || unicode.IsDigit(char) || char == '_' {
-			cursor++
-			column++
-		} else {
+	for i < len(input) {
+		r, size := utf8.DecodeRuneInString(input[i:])
+		if r == utf8.RuneError && size == 1 {
 			break
 		}
+		ok := false
+		if first {
+			ok = unicode.IsLetter(r) || r == '_'
+			first = false
+		} else {
+			ok = unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || r == '_'
+		}
+		if !ok {
+			break
+		}
+		i += size
+		col++
 	}
 
-	return input[start:cursor], cursor, column
+	return input[start:i], i, col
 }
 
 // getKeywordType returns the appropriate token type for a keyword, or TokenIdentifier for non-keywords.

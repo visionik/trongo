@@ -96,7 +96,15 @@ func (p *parser) parse() (interface{}, error) {
 		return p.parseImplicitObject()
 	}
 
-	return p.parseValue()
+	v, err := p.parseValue(0)
+	if err != nil {
+		return nil, err
+	}
+	p.skipNewlines()
+	if p.current().Type != TokenEOF {
+		return nil, p.syntaxError("unexpected trailing tokens")
+	}
+	return v, nil
 }
 
 // parseHeader parses all class definitions from the header.
@@ -166,7 +174,10 @@ func (p *parser) parseClassDefinition() error {
 }
 
 // parseValue is the main recursive parser for all TRON values.
-func (p *parser) parseValue() (interface{}, error) {
+func (p *parser) parseValue(depth int) (interface{}, error) {
+	if depth > maxParseDepth {
+		return nil, p.syntaxError("maximum parse depth exceeded")
+	}
 	tok := p.current()
 
 	switch tok.Type {
@@ -198,14 +209,14 @@ func (p *parser) parseValue() (interface{}, error) {
 		return tok.Value, nil
 
 	case TokenLBracket:
-		return p.parseArray()
+		return p.parseArray(depth + 1)
 
 	case TokenLBrace:
-		return p.parseObject()
+		return p.parseObject(depth + 1)
 
 	case TokenIdentifier:
 		// Could be class instantiation A(...)
-		return p.parseClassInstantiation()
+		return p.parseClassInstantiation(depth + 1)
 
 	default:
 		return nil, p.syntaxError(fmt.Sprintf("unexpected token: %s", tok.Type))
@@ -227,7 +238,7 @@ func (p *parser) parseNumberValue(s string) (float64, error) {
 }
 
 // parseArray parses an array: [item1,item2,...]
-func (p *parser) parseArray() ([]interface{}, error) {
+func (p *parser) parseArray(depth int) ([]interface{}, error) {
 	if _, err := p.expect(TokenLBracket); err != nil {
 		return nil, err
 	}
@@ -244,7 +255,7 @@ func (p *parser) parseArray() ([]interface{}, error) {
 	// Parse array elements
 	for {
 		p.skipNewlines()
-		item, err := p.parseValue()
+		item, err := p.parseValue(depth + 1)
 		if err != nil {
 			return nil, err
 		}
@@ -275,6 +286,14 @@ func (p *parser) parseArray() ([]interface{}, error) {
 //
 // where separator can be one or more newlines and/or commas.
 func (p *parser) parseImplicitObject() (map[string]interface{}, error) {
+	// Root implicit object counts as depth 1.
+	return p.parseImplicitObjectDepth(1)
+}
+
+func (p *parser) parseImplicitObjectDepth(depth int) (map[string]interface{}, error) {
+	if depth > maxParseDepth {
+		return nil, p.syntaxError("maximum parse depth exceeded")
+	}
 	obj := make(map[string]interface{})
 
 	for {
@@ -299,7 +318,7 @@ func (p *parser) parseImplicitObject() (map[string]interface{}, error) {
 		}
 
 		// Parse value
-		value, err := p.parseValue()
+		value, err := p.parseValue(depth + 1)
 		if err != nil {
 			return nil, err
 		}
@@ -326,7 +345,7 @@ func (p *parser) parseImplicitObject() (map[string]interface{}, error) {
 }
 
 // parseObject parses an object: {"key":value,"key2":value2}
-func (p *parser) parseObject() (map[string]interface{}, error) {
+func (p *parser) parseObject(depth int) (map[string]interface{}, error) {
 	if _, err := p.expect(TokenLBrace); err != nil {
 		return nil, err
 	}
@@ -363,7 +382,7 @@ func (p *parser) parseObject() (map[string]interface{}, error) {
 
 		p.skipNewlines()
 		// Parse value
-		value, err := p.parseValue()
+		value, err := p.parseValue(depth + 1)
 		if err != nil {
 			return nil, err
 		}
@@ -388,7 +407,7 @@ func (p *parser) parseObject() (map[string]interface{}, error) {
 }
 
 // parseClassInstantiation parses class instantiation: A(arg1,arg2,...)
-func (p *parser) parseClassInstantiation() (map[string]interface{}, error) {
+func (p *parser) parseClassInstantiation(depth int) (map[string]interface{}, error) {
 	// Get class name
 	className := p.current().Value
 	p.advance()
@@ -418,7 +437,7 @@ func (p *parser) parseClassInstantiation() (map[string]interface{}, error) {
 	// Parse arguments
 	for {
 		p.skipNewlines()
-		arg, err := p.parseValue()
+		arg, err := p.parseValue(depth + 1)
 		if err != nil {
 			return nil, err
 		}

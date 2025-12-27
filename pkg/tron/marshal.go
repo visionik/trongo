@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"unicode"
 )
 
 // ClassDef represents a class definition with name and property keys.
@@ -33,7 +35,7 @@ func marshal(v interface{}, prefix, indent string) ([]byte, error) {
 	}
 
 	// Phase 1: Discover classes through DFS
-	if err := e.discoverClasses(reflect.ValueOf(v)); err != nil {
+	if err := e.discoverClasses(reflect.ValueOf(v), 0); err != nil {
 		return nil, err
 	}
 
@@ -69,7 +71,7 @@ func marshal(v interface{}, prefix, indent string) ([]byte, error) {
 	}
 
 	// Generate data
-	data, err := e.serialize(reflect.ValueOf(v), make(map[uintptr]bool))
+	data, err := e.serialize(reflect.ValueOf(v), make(map[uintptr]bool), 0)
 	if err != nil {
 		return nil, err
 	}
@@ -89,10 +91,15 @@ type encoder struct {
 	prefix            string
 	indent            string
 	classCounter      int
+
+	structCache sync.Map // map[reflect.Type]*structTypeInfo
 }
 
 // discoverClasses performs DFS to discover all object schemas.
-func (e *encoder) discoverClasses(v reflect.Value) error {
+func (e *encoder) discoverClasses(v reflect.Value, depth int) error {
+	if depth > maxWalkDepth {
+		return fmt.Errorf("maximum walk depth exceeded")
+	}
 	if !v.IsValid() {
 		return nil
 	}
@@ -118,14 +125,14 @@ func (e *encoder) discoverClasses(v reflect.Value) error {
 	switch v.Kind() {
 	case reflect.Array, reflect.Slice:
 		for i := 0; i < v.Len(); i++ {
-			if err := e.discoverClasses(v.Index(i)); err != nil {
+			if err := e.discoverClasses(v.Index(i), depth+1); err != nil {
 				return err
 			}
 		}
 
 	case reflect.Map:
 		for _, key := range v.MapKeys() {
-			if err := e.discoverClasses(v.MapIndex(key)); err != nil {
+			if err := e.discoverClasses(v.MapIndex(key), depth+1); err != nil {
 				return err
 			}
 		}
@@ -158,7 +165,7 @@ func (e *encoder) discoverClasses(v reflect.Value) error {
 			// Recursively visit struct fields
 			for _, key := range keys {
 				fieldValue := e.getStructFieldValue(v, key)
-				if err := e.discoverClasses(fieldValue); err != nil {
+				if err := e.discoverClasses(fieldValue, depth+1); err != nil {
 					return err
 				}
 			}
@@ -191,7 +198,10 @@ func (e *encoder) filterClasses() {
 }
 
 // serialize converts a Go value to TRON format string.
-func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, error) {
+func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool, depth int) (string, error) {
+	if depth > maxWalkDepth {
+		return "", fmt.Errorf("maximum walk depth exceeded")
+	}
 	if !v.IsValid() {
 		return "null", nil
 	}
@@ -277,7 +287,7 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, er
 
 		var items []string
 		for i := 0; i < v.Len(); i++ {
-			item, err := e.serialize(v.Index(i), stack)
+			item, err := e.serialize(v.Index(i), stack, depth+1)
 			if err != nil {
 				return "", err
 			}
@@ -308,7 +318,7 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, er
 			if err != nil {
 				return "", err
 			}
-			value, err := e.serialize(v.MapIndex(key), stack)
+			value, err := e.serialize(v.MapIndex(key), stack, depth+1)
 			if err != nil {
 				return "", err
 			}
@@ -337,7 +347,7 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, er
 			var args []string
 			for _, key := range classDef.Keys {
 				fieldValue := e.getStructFieldValue(v, key)
-				arg, err := e.serialize(fieldValue, stack)
+				arg, err := e.serialize(fieldValue, stack, depth+1)
 				if err != nil {
 					return "", err
 				}
@@ -349,7 +359,7 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, er
 			var pairs []string
 			for _, key := range keys {
 				fieldValue := e.getStructFieldValue(v, key)
-				value, err := e.serialize(fieldValue, stack)
+				value, err := e.serialize(fieldValue, stack, depth+1)
 				if err != nil {
 					return "", err
 				}
@@ -364,69 +374,82 @@ func (e *encoder) serialize(v reflect.Value, stack map[uintptr]bool) (string, er
 	}
 }
 
+type structTypeInfo struct {
+	fields []structFieldInfo
+	byName map[string]int // json name -> field index
+}
+
+type structFieldInfo struct {
+	name      string
+	index     int
+	omitempty bool
+}
+
 // getStructKeys returns the field names for a struct, respecting json tags.
 func (e *encoder) getStructKeys(v reflect.Value) ([]string, error) {
-	t := v.Type()
-	var keys []string
+	ti := e.getStructTypeInfo(v.Type())
+	keys := make([]string, 0, len(ti.fields))
+	for _, f := range ti.fields {
+		fv := v.Field(f.index)
+		if f.omitempty && isEmptyValue(fv) {
+			continue
+		}
+		keys = append(keys, f.name)
+	}
+	return keys, nil
+}
+
+func (e *encoder) getStructTypeInfo(t reflect.Type) *structTypeInfo {
+	if v, ok := e.structCache.Load(t); ok {
+		return v.(*structTypeInfo)
+	}
+
+	info := &structTypeInfo{
+		fields: make([]structFieldInfo, 0, t.NumField()),
+		byName: make(map[string]int),
+	}
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-
-		// Skip unexported fields
 		if !field.IsExported() {
 			continue
 		}
 
-		fieldValue := v.Field(i)
-
-		// Get field name from json tag or use field name
 		name := field.Name
+		omitempty := false
 		if tag := field.Tag.Get("json"); tag != "" {
 			parts := strings.Split(tag, ",")
 			if parts[0] == "-" {
-				continue // Skip this field
+				continue
 			}
 			if parts[0] != "" {
 				name = parts[0]
 			}
-
-			// Check for omitempty
-			if len(parts) > 1 && contains(parts[1:], "omitempty") && isEmptyValue(fieldValue) {
-				continue
+			if len(parts) > 1 && contains(parts[1:], "omitempty") {
+				omitempty = true
 			}
 		}
 
-		keys = append(keys, name)
+		info.fields = append(info.fields, structFieldInfo{name: name, index: i, omitempty: omitempty})
+		// First field wins for name collisions (matches encoding/json behavior).
+		if _, exists := info.byName[name]; !exists {
+			info.byName[name] = i
+		}
 	}
 
-	return keys, nil
+	// Publish
+	e.structCache.Store(t, info)
+	return info
 }
 
 // getStructFieldValue returns the value of a struct field by name, respecting json tags.
 func (e *encoder) getStructFieldValue(v reflect.Value, name string) reflect.Value {
-	t := v.Type()
-
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-
-		if !field.IsExported() {
-			continue
-		}
-
-		fieldName := field.Name
-		if tag := field.Tag.Get("json"); tag != "" {
-			parts := strings.Split(tag, ",")
-			if parts[0] != "" && parts[0] != "-" {
-				fieldName = parts[0]
-			}
-		}
-
-		if fieldName == name {
-			return v.Field(i)
-		}
+	ti := e.getStructTypeInfo(v.Type())
+	idx, ok := ti.byName[name]
+	if !ok {
+		return reflect.Value{}
 	}
-
-	return reflect.Value{}
+	return v.Field(idx)
 }
 
 // serializeMapKey converts a map key to a string for TRON object notation.
@@ -468,20 +491,20 @@ func generateClassName(index int) string {
 }
 
 // isValidIdentifier checks if a string is a valid identifier (no need to quote).
+// Must match the tokenizer's identifier rules.
 func isValidIdentifier(s string) bool {
 	if len(s) == 0 {
 		return false
 	}
-
 	for i, r := range s {
 		if i == 0 {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_') {
+			if !(unicode.IsLetter(r) || r == '_') {
 				return false
 			}
-		} else {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
-				return false
-			}
+			continue
+		}
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || r == '_') {
+			return false
 		}
 	}
 	return true

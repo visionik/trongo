@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // decoder handles type conversion from parsed values to Go types.
@@ -20,6 +21,12 @@ func unmarshal(data []byte, v interface{}) error {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
 		return &InvalidUnmarshalError{Type: reflect.TypeOf(v)}
+	}
+	if len(data) > maxInputBytes {
+		return &SyntaxError{msg: "input too large", Offset: 0}
+	}
+	if !utf8.Valid(data) {
+		return &SyntaxError{msg: "invalid UTF-8", Offset: 0}
 	}
 
 	// Tokenize
