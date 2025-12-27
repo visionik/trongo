@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:tron-format.github.io)",
+      "Bash(go mod tidy:*)",
+      "Bash(make check:*)",
+      "Bash(make test:*)",
+      "Bash(make test/coverage:*)",
+      "Bash(go test:*)"
+    ]
+  }
+}
