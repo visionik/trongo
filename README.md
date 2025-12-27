@@ -15,6 +15,20 @@ See full specification for the TRON format at: https://tron-format.github.io/
 go get github.com/tron-format/trongo
 ```
 
+## Development
+
+This project uses a Taskfile and depends on **go-task** (Task): https://taskfile.dev/
+
+Common commands:
+
+```bash
+# list available tasks
+task --list
+
+# run the full local workflow (fmt/vet/build/test)
+task all
+```
+
 ## Usage
 
 ```go
